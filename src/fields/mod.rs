@@ -4,12 +4,14 @@
 //! Field computation happens in source-local coordinates, with coordinate transforms
 //! applied automatically.
 
+pub mod currents;
 pub mod magnets;
 mod transforms;
 
 use crate::sources::{AnySource, FieldFuncId, Source};
 use crate::types::Observers;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
+use rayon::prelude::*;
 
 pub use transforms::{transform_field_to_global, transform_observers_to_local};
 
@@ -52,34 +54,38 @@ pub use transforms::{transform_field_to_global, transform_observers_to_local};
 pub fn get_b(sources: &[AnySource], observers: &Observers) -> Array2<f64> {
     let n_obs = observers.len();
 
-    // Initialize result array (sum of fields from all sources)
+    // Parallel processing across sources - each source is computed independently
+    // then the results are summed
+    let field_components: Vec<Array2<f64>> = sources
+        .par_iter()
+        .map(|source| {
+            // Get source properties
+            let path = source.path();
+            let orientation = source.orientation();
+
+            // For now, only use the first position in the path
+            // (full path/animation support can be added later)
+            let position = path.get(0).expect("Source path must have at least one position");
+
+            // Transform observers to source-local coordinates
+            let local_observers = transforms::transform_observers_to_local(
+                observers.as_array(),
+                position,
+                orientation,
+            );
+
+            // Compute field in source-local coordinates
+            let local_field = compute_field_for_source(source, &local_observers);
+
+            // Transform field back to global coordinates
+            transforms::transform_field_to_global(&local_field, orientation)
+        })
+        .collect();
+
+    // Sum all field contributions
     let mut total_field = Array2::zeros((n_obs, 3));
-
-    // Process each source
-    for source in sources {
-        // Get source properties
-        let path = source.path();
-        let orientation = source.orientation();
-
-        // For now, only use the first position in the path
-        // (full path/animation support can be added later)
-        let position = path.get(0).expect("Source path must have at least one position");
-
-        // Transform observers to source-local coordinates
-        let local_observers = transforms::transform_observers_to_local(
-            observers.as_array(),
-            position,
-            orientation,
-        );
-
-        // Compute field in source-local coordinates
-        let local_field = compute_field_for_source(source, &local_observers);
-
-        // Transform field back to global coordinates
-        let global_field = transforms::transform_field_to_global(&local_field, orientation);
-
-        // Accumulate into total field
-        total_field = total_field + global_field;
+    for field in field_components {
+        total_field = total_field + field;
     }
 
     total_field
@@ -124,13 +130,50 @@ fn compute_field_for_source(source: &AnySource, observers: &Array2<f64>) -> Arra
         }
 
         FieldFuncId::CurrentCircle => {
-            // TODO: Implement circle current field computation
-            unimplemented!("Circle current field computation not yet implemented")
+            // Extract Circle source properties
+            let props = source.get_properties();
+            let diameter = props.diameter.expect("Circle source missing diameter");
+            let current = props.current.expect("Circle source missing current");
+
+            currents::circle::compute_circle_field(&observers, diameter, current)
         }
 
         FieldFuncId::CurrentPolyline => {
-            // TODO: Implement polyline current field computation
-            unimplemented!("Polyline current field computation not yet implemented")
+            let vertices = props.vertices.expect("Polyline source missing vertices");
+            let current = props.current.expect("Polyline source missing current");
+
+            // Convert consecutive vertices into line segments
+            if vertices.len() < 2 {
+                // Not enough vertices for segments
+                return Array2::zeros((observers.nrows(), 3));
+            }
+
+            let n_segments = vertices.len() - 1;
+            let mut segment_starts = Array2::zeros((n_segments, 3));
+            let mut segment_ends = Array2::zeros((n_segments, 3));
+            let mut currents = Array1::zeros(n_segments);
+
+            for i in 0..n_segments {
+                // Start of segment i
+                segment_starts[[i, 0]] = vertices[i][0];
+                segment_starts[[i, 1]] = vertices[i][1];
+                segment_starts[[i, 2]] = vertices[i][2];
+
+                // End of segment i (start of segment i+1)
+                segment_ends[[i, 0]] = vertices[i + 1][0];
+                segment_ends[[i, 1]] = vertices[i + 1][1];
+                segment_ends[[i, 2]] = vertices[i + 1][2];
+
+                // All segments carry the same current
+                currents[i] = current;
+            }
+
+            currents::polyline::compute_polyline_field(
+                &observers,
+                &segment_starts,
+                &segment_ends,
+                &currents,
+            )
         }
 
         FieldFuncId::Dipole => {

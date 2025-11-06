@@ -8,10 +8,10 @@
 //! - Paraview: Professional scientific visualization
 //! - Any VTK-compatible tool
 
-use magrslib::export::vtk::{VtkGrid3D, export_bfield_to_vtk};
+use magrslib::export::vtk::{export_bfield_to_vtk, VtkGrid3D};
+use magrslib::get_b;
 use magrslib::sources::magnets::Cuboid;
 use magrslib::types::Observers;
-use magrslib::get_b;
 
 fn main() {
     println!("==============================================");
@@ -20,9 +20,9 @@ fn main() {
 
     // Create a cuboid magnet
     let magnet = Cuboid::builder()
-        .dimension([0.010, 0.010, 0.004])    // 1cm x 1cm x 4mm (similar to example)
-        .polarization([0.0, 0.0, 1.0])        // 1 Tesla in +z direction
-        .position([0.0, 0.0, 0.0])            // Centered at origin
+        .dimension([0.010, 0.010, 0.01]) // 1cm x 1cm x 4mm (similar to example)
+        .polarization([0.0, 0.0, 1.0]) // 1 Tesla in +z direction
+        .position([0.0, 0.0, 0.0]) // Centered at origin
         .build()
         .unwrap();
 
@@ -34,15 +34,19 @@ fn main() {
 
     // Create 3D grid
     // Grid spacing of 1mm, covering -20mm to +20mm in all directions
-    let grid_min = -0.020;  // -20mm
-    let grid_max = 0.020;   // +20mm
-    let grid_points = 41;   // 41^3 = 68,921 points
+    let grid_min = -0.050; // -20mm
+    let grid_max = 0.050; // +20mm
+    let grid_points = 128; // 41^3 = 68,921 points
 
     println!("Generating 3D observation grid:");
     println!("  Range: {}m to {}m", grid_min, grid_max);
-    println!("  Resolution: {}x{}x{} = {} points",
-             grid_points, grid_points, grid_points,
-             grid_points * grid_points * grid_points);
+    println!(
+        "  Resolution: {}x{}x{} = {} points",
+        grid_points,
+        grid_points,
+        grid_points,
+        grid_points * grid_points * grid_points
+    );
     println!("  Grid spacing: 1mm\n");
 
     let observers = Observers::from_grid_3d(
@@ -67,8 +71,12 @@ fn main() {
     for i in 0..b_field.nrows() {
         for j in 0..3 {
             let val = b_field[[i, j]];
-            if val.is_nan() { nan_count += 1; }
-            if val.is_infinite() { inf_count += 1; }
+            if val.is_nan() {
+                nan_count += 1;
+            }
+            if val.is_infinite() {
+                inf_count += 1;
+            }
         }
     }
 
@@ -88,7 +96,7 @@ fn main() {
             let bz = b_field[[i, 2]];
             (bx * bx + by * by + bz * bz).sqrt()
         })
-        .filter(|&m| m.is_finite())  // Filter out NaN and Inf
+        .filter(|&m| m.is_finite()) // Filter out NaN and Inf
         .collect();
 
     if magnitudes.is_empty() {
@@ -100,7 +108,10 @@ fn main() {
         println!("  Valid points: {} / {}", magnitudes.len(), b_field.nrows());
         println!("  Min:    {:.3e} T", magnitudes[0]);
         println!("  Max:    {:.3e} T", magnitudes[magnitudes.len() - 1]);
-        println!("  Mean:   {:.3e} T", magnitudes.iter().sum::<f64>() / magnitudes.len() as f64);
+        println!(
+            "  Mean:   {:.3e} T",
+            magnitudes.iter().sum::<f64>() / magnitudes.len() as f64
+        );
         println!("  Median: {:.3e} T\n", magnitudes[magnitudes.len() / 2]);
     }
 
@@ -137,7 +148,7 @@ fn main() {
     export_bfield_to_vtk(
         output_file,
         &vtk_grid,
-        &b_field_clean,  // Use cleaned data
+        &b_field_clean, // Use cleaned data
         Some("B-field from cuboid magnet (10x10x4mm, 1T z-polarization)"),
     )
     .expect("Failed to export to VTK");

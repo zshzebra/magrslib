@@ -9,6 +9,7 @@
 
 use crate::utils::FOUR_PI;
 use ndarray::{Array1, Array2, Axis};
+use rayon::prelude::*;
 
 /// Compute B-field from homogeneously magnetized cuboids
 ///
@@ -56,17 +57,20 @@ pub fn magnet_cuboid_bfield(
     let maskz: Vec<bool> = z.iter().map(|&zi| zi > 0.0).collect();
 
     // Flip coordinates to map to bottom Q4
-    for i in 0..n {
-        if maskx[i] {
-            x[i] = -x[i];
-        }
-        if masky[i] {
-            y[i] = -y[i];
-        }
-        if maskz[i] {
-            z[i] = -z[i];
-        }
-    }
+    let x_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        if maskx[i] { -x[i] } else { x[i] }
+    }).collect();
+    x = Array1::from(x_vec);
+
+    let y_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        if masky[i] { -y[i] } else { y[i] }
+    }).collect();
+    y = Array1::from(y_vec);
+
+    let z_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        if maskz[i] { -z[i] } else { z[i] }
+    }).collect();
+    z = Array1::from(z_vec);
 
     // Create sign flip arrays (3x3 matrices per observer)
     // qsigns[i] is a 3x3 matrix for observer i
@@ -77,29 +81,31 @@ pub fn magnet_cuboid_bfield(
     let qs_flipz = [[1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]];
 
     // Apply sign flips
-    for i in 0..n {
+    qsigns = (0..n).into_par_iter().map(|i| {
+        let mut qsign = [[1.0_f64; 3]; 3];
         if maskx[i] {
             for j in 0..3 {
                 for k in 0..3 {
-                    qsigns[i][j][k] *= qs_flipx[j][k];
+                    qsign[j][k] *= qs_flipx[j][k];
                 }
             }
         }
         if masky[i] {
             for j in 0..3 {
                 for k in 0..3 {
-                    qsigns[i][j][k] *= qs_flipy[j][k];
+                    qsign[j][k] *= qs_flipy[j][k];
                 }
             }
         }
         if maskz[i] {
             for j in 0..3 {
                 for k in 0..3 {
-                    qsigns[i][j][k] *= qs_flipz[j][k];
+                    qsign[j][k] *= qs_flipz[j][k];
                 }
             }
         }
-    }
+        qsign
+    }).collect();
 
     // === Field computation ===
     // Compute relative positions to corners
@@ -142,41 +148,41 @@ pub fn magnet_cuboid_bfield(
         .mapv(|v| v.ln());
 
     // Arctangent terms (ff1x, ff1y, ff1z)
-    let mut ff1x = Array1::zeros(n);
-    for i in 0..n {
-        ff1x[i] = f64::atan2(ymb[i] * zmc[i], xma[i] * mmm[i])
+    let ff1x_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        f64::atan2(ymb[i] * zmc[i], xma[i] * mmm[i])
             - f64::atan2(ymb[i] * zmc[i], xpa[i] * pmm[i])
             - f64::atan2(ypb[i] * zmc[i], xma[i] * mpm[i])
             + f64::atan2(ypb[i] * zmc[i], xpa[i] * ppm[i])
             - f64::atan2(ymb[i] * zpc[i], xma[i] * mmp[i])
             + f64::atan2(ymb[i] * zpc[i], xpa[i] * pmp[i])
             + f64::atan2(ypb[i] * zpc[i], xma[i] * mpp[i])
-            - f64::atan2(ypb[i] * zpc[i], xpa[i] * ppp[i]);
-    }
+            - f64::atan2(ypb[i] * zpc[i], xpa[i] * ppp[i])
+    }).collect();
+    let ff1x = Array1::from(ff1x_vec);
 
-    let mut ff1y = Array1::zeros(n);
-    for i in 0..n {
-        ff1y[i] = f64::atan2(xma[i] * zmc[i], ymb[i] * mmm[i])
+    let ff1y_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        f64::atan2(xma[i] * zmc[i], ymb[i] * mmm[i])
             - f64::atan2(xpa[i] * zmc[i], ymb[i] * pmm[i])
             - f64::atan2(xma[i] * zmc[i], ypb[i] * mpm[i])
             + f64::atan2(xpa[i] * zmc[i], ypb[i] * ppm[i])
             - f64::atan2(xma[i] * zpc[i], ymb[i] * mmp[i])
             + f64::atan2(xpa[i] * zpc[i], ymb[i] * pmp[i])
             + f64::atan2(xma[i] * zpc[i], ypb[i] * mpp[i])
-            - f64::atan2(xpa[i] * zpc[i], ypb[i] * ppp[i]);
-    }
+            - f64::atan2(xpa[i] * zpc[i], ypb[i] * ppp[i])
+    }).collect();
+    let ff1y = Array1::from(ff1y_vec);
 
-    let mut ff1z = Array1::zeros(n);
-    for i in 0..n {
-        ff1z[i] = f64::atan2(xma[i] * ymb[i], zmc[i] * mmm[i])
+    let ff1z_vec: Vec<f64> = (0..n).into_par_iter().map(|i| {
+        f64::atan2(xma[i] * ymb[i], zmc[i] * mmm[i])
             - f64::atan2(xpa[i] * ymb[i], zmc[i] * pmm[i])
             - f64::atan2(xma[i] * ypb[i], zmc[i] * mpm[i])
             + f64::atan2(xpa[i] * ypb[i], zmc[i] * ppm[i])
             - f64::atan2(xma[i] * ymb[i], zpc[i] * mmp[i])
             + f64::atan2(xpa[i] * ymb[i], zpc[i] * pmp[i])
             + f64::atan2(xma[i] * ypb[i], zpc[i] * mpp[i])
-            - f64::atan2(xpa[i] * ypb[i], zpc[i] * ppp[i]);
-    }
+            - f64::atan2(xpa[i] * ypb[i], zpc[i] * ppp[i])
+    }).collect();
+    let ff1z = Array1::from(ff1z_vec);
 
     // === Combine contributions from each polarization component ===
     // Extract sign corrections
