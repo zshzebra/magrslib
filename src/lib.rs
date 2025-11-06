@@ -35,5 +35,5 @@ pub mod types;
 pub mod utils;
 
 // Re-export commonly used types
-pub use fields::get_b;
+pub use fields::{get_b, get_b_at_time, get_b_time_series};
 pub use types::{Observers, Orientation, Path, Position, Vec3};

@@ -52,6 +52,22 @@ pub use transforms::{transform_field_to_global, transform_observers_to_local};
 /// let b_field = get_b(&[magnet.into()], &observers);
 /// ```
 pub fn get_b(sources: &[AnySource], observers: &Observers) -> Array2<f64> {
+    get_b_at_time(sources, observers, 0.0)
+}
+
+/// Compute B-field from sources at observer positions at specific time
+///
+/// This enables time-varying current sources and dynamic field analysis.
+/// For static sources, time parameter is ignored.
+///
+/// # Arguments
+/// * `sources` - Collection of magnetic field sources
+/// * `observers` - Positions where fields should be evaluated
+/// * `time` - Time in seconds for evaluating time-varying currents
+///
+/// # Returns
+/// B-field vectors at observer positions (n_observers, 3) in Tesla
+pub fn get_b_at_time(sources: &[AnySource], observers: &Observers, time: f64) -> Array2<f64> {
     let n_obs = observers.len();
 
     // Parallel processing across sources - each source is computed independently
@@ -75,7 +91,7 @@ pub fn get_b(sources: &[AnySource], observers: &Observers) -> Array2<f64> {
             );
 
             // Compute field in source-local coordinates
-            let local_field = compute_field_for_source(source, &local_observers);
+            let local_field = compute_field_for_source_at_time(source, &local_observers, time);
 
             // Transform field back to global coordinates
             transforms::transform_field_to_global(&local_field, orientation)
@@ -91,9 +107,70 @@ pub fn get_b(sources: &[AnySource], observers: &Observers) -> Array2<f64> {
     total_field
 }
 
+/// Compute B-field time series from sources at observer positions
+///
+/// Enables analysis of field evolution with time-varying currents such as
+/// PWM signals, switching transients, and AC waveforms.
+///
+/// # Arguments
+/// * `sources` - Collection of magnetic field sources
+/// * `observers` - Positions where fields should be evaluated
+/// * `time_start` - Start time in seconds
+/// * `time_end` - End time in seconds
+/// * `time_step` - Time step in seconds
+///
+/// # Returns
+/// Vector of (time, field) pairs where field is (n_observers, 3) in Tesla
+///
+/// # Example
+/// ```no_run
+/// use magrslib::{get_b_time_series, Observers};
+/// use magrslib::sources::currents::Polyline;
+/// use magrslib::sources::current_functions::PWMCurrent;
+///
+/// // PWM solenoid simulation
+/// let pwm = Box::new(PWMCurrent::new(1000.0, 0.5, 10.0)); // 1kHz, 50%, 10A
+/// let solenoid = Polyline::builder()
+///     .vertices(helical_vertices)
+///     .current_function(pwm)
+///     .build()
+///     .unwrap();
+///
+/// let observers = Observers::from_vec3s(vec![[0.0, 0.0, 0.0]]);
+/// let time_series = get_b_time_series(
+///     &[solenoid.into()],
+///     &observers,
+///     0.0,    // Start time
+///     0.002,  // End time (2ms = 2 PWM cycles)
+///     0.00001 // Time step (10μs)
+/// );
+/// ```
+pub fn get_b_time_series(
+    sources: &[AnySource],
+    observers: &Observers,
+    time_start: f64,
+    time_end: f64,
+    time_step: f64,
+) -> Vec<(f64, Array2<f64>)> {
+    let num_steps = ((time_end - time_start) / time_step).ceil() as usize + 1;
+    let times: Vec<f64> = (0..num_steps)
+        .map(|i| time_start + i as f64 * time_step)
+        .collect();
+
+    // Parallel computation across time steps
+    times
+        .par_iter()
+        .map(|&time| {
+            let field = get_b_at_time(sources, observers, time);
+            (time, field)
+        })
+        .collect()
+}
+
 /// Compute field for a single source in source-local coordinates
 ///
 /// Dispatches to the appropriate field computation function based on source type.
+/// Backward compatibility wrapper that calls compute_field_for_source_at_time with time=0.
 ///
 /// # Arguments
 /// * `source` - The source object
@@ -102,6 +179,22 @@ pub fn get_b(sources: &[AnySource], observers: &Observers) -> Array2<f64> {
 /// # Returns
 /// Field vectors in source-local coordinates (n, 3)
 fn compute_field_for_source(source: &AnySource, observers: &Array2<f64>) -> Array2<f64> {
+    compute_field_for_source_at_time(source, observers, 0.0)
+}
+
+/// Compute field for a single source in source-local coordinates at specific time
+///
+/// Dispatches to the appropriate field computation function based on source type.
+/// Supports time-varying current sources.
+///
+/// # Arguments
+/// * `source` - The source object
+/// * `observers` - Observer positions in source-local coordinates (n, 3)
+/// * `time` - Time in seconds for evaluating time-varying currents
+///
+/// # Returns
+/// Field vectors in source-local coordinates (n, 3)
+fn compute_field_for_source_at_time(source: &AnySource, observers: &Array2<f64>, time: f64) -> Array2<f64> {
     let n = observers.nrows();
     let props = source.get_properties();
 
@@ -133,14 +226,14 @@ fn compute_field_for_source(source: &AnySource, observers: &Array2<f64>) -> Arra
             // Extract Circle source properties
             let props = source.get_properties();
             let diameter = props.diameter.expect("Circle source missing diameter");
-            let current = props.current.expect("Circle source missing current");
+            let current = props.evaluate_current(time);
 
             currents::circle::compute_circle_field(&observers, diameter, current)
         }
 
         FieldFuncId::CurrentPolyline => {
-            let vertices = props.vertices.expect("Polyline source missing vertices");
-            let current = props.current.expect("Polyline source missing current");
+            let vertices = props.vertices.as_ref().expect("Polyline source missing vertices");
+            let current = props.evaluate_current(time);
 
             // Convert consecutive vertices into line segments
             if vertices.len() < 2 {

@@ -1,6 +1,7 @@
 //! Current source implementations (Circle, Polyline)
 
 use crate::sources::{FieldFuncId, Source, SourceProperties};
+use crate::sources::current_functions::CurrentFunction;
 use crate::types::{Orientation, Path, Position, Vec3};
 
 // =============================================================================
@@ -123,11 +124,13 @@ impl CircleBuilder {
 /// Piecewise linear current path (line segments)
 ///
 /// Current flows through connected line segments defined by vertices.
+/// Supports both static and time-varying current I(t).
 /// Equivalent to Python's `magpylib.current.Polyline`
 #[derive(Debug, Clone)]
 pub struct Polyline {
     vertices: Vec<Vec3>,  // Vertices defining the line segments
-    current: f64,         // Current in Amperes
+    current: f64,         // Static current in Amperes (for backward compatibility)
+    current_function: Option<Box<dyn CurrentFunction>>, // Time-varying current I(t)
     path: Path,           // Time-varying positions (applies to entire polyline)
     orientation: Orientation, // Rotation
 }
@@ -156,6 +159,7 @@ impl Source for Polyline {
         SourceProperties {
             vertices: Some(self.vertices.clone()),
             current: Some(self.current),
+            current_function: self.current_function.clone(),
             ..Default::default()
         }
     }
@@ -166,6 +170,7 @@ impl Source for Polyline {
 pub struct PolylineBuilder {
     vertices: Option<Vec<Vec3>>,
     current: Option<f64>,
+    current_function: Option<Box<dyn CurrentFunction>>,
     path: Option<Path>,
     orientation: Option<Orientation>,
 }
@@ -182,9 +187,17 @@ impl PolylineBuilder {
         self
     }
 
-    /// Set the current in Amperes
+    /// Set the current in Amperes (static/DC current)
     pub fn current(mut self, i: f64) -> Self {
         self.current = Some(i);
+        self.current_function = None; // Clear any current function
+        self
+    }
+
+    /// Set a time-varying current function I(t)
+    pub fn current_function(mut self, func: Box<dyn CurrentFunction>) -> Self {
+        self.current_function = Some(func);
+        self.current = Some(0.0); // Set fallback value for backward compatibility
         self
     }
 
@@ -211,9 +224,12 @@ impl PolylineBuilder {
         let vertices = self
             .vertices
             .ok_or(super::magnets::BuildError::MissingVertices)?;
-        let current = self
-            .current
-            .ok_or(super::magnets::BuildError::MissingCurrent)?;
+
+        // Require either static current or current function
+        let current = self.current.unwrap_or(0.0);
+        if current == 0.0 && self.current_function.is_none() {
+            return Err(super::magnets::BuildError::MissingCurrent);
+        }
 
         if vertices.len() < 2 {
             return Err(super::magnets::BuildError::MissingVertices);
@@ -227,6 +243,7 @@ impl PolylineBuilder {
         Ok(Polyline {
             vertices,
             current,
+            current_function: self.current_function,
             path,
             orientation,
         })

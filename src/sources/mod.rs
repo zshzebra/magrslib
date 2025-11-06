@@ -4,11 +4,13 @@
 //! Sources implement the `Source` trait and can be collected in `AnySource` enum
 //! for heterogeneous collections.
 
+pub mod current_functions;
 pub mod currents;
 pub mod dipole;
 pub mod magnets;
 
 use crate::types::{Orientation, Path, Vec3};
+use current_functions::CurrentFunction;
 
 /// Identifier for field computation functions
 ///
@@ -37,7 +39,8 @@ pub struct SourceProperties {
     pub height: Option<f64>,         // For cylinders
 
     // Current properties
-    pub current: Option<f64>,     // Current in Amperes
+    pub current: Option<f64>,     // Static current in Amperes (for backward compatibility)
+    pub current_function: Option<Box<dyn CurrentFunction>>, // Time-varying current I(t)
     pub vertices: Option<Vec<Vec3>>, // For polylines
 
     // Dipole properties
@@ -54,8 +57,29 @@ impl SourceProperties {
             diameter: None,
             height: None,
             current: None,
+            current_function: None,
             vertices: None,
             moment: None,
+        }
+    }
+
+    /// Evaluate current at given time
+    ///
+    /// Uses time-varying current function if available, otherwise falls back to static current.
+    /// This provides backward compatibility while enabling dynamic current sources.
+    ///
+    /// # Arguments
+    /// * `time` - Time in seconds
+    ///
+    /// # Returns
+    /// Current in Amperes, or 0.0 if no current is defined
+    pub fn evaluate_current(&self, time: f64) -> f64 {
+        if let Some(ref current_fn) = self.current_function {
+            current_fn.evaluate(time)
+        } else if let Some(static_current) = self.current {
+            static_current
+        } else {
+            0.0
         }
     }
 }
